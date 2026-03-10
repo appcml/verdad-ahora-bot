@@ -2,8 +2,8 @@ name: Verdad Ahora - Publicador Viral
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Cada hora en punto
-  workflow_dispatch:      # Permite ejecución manual
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
   publicar:
@@ -11,10 +11,10 @@ jobs:
     
     steps:
     - name: Checkout código
-      uses: actions/checkout@v4  # ← Actualizado a v4
+      uses: actions/checkout@v4
       
     - name: Setup Python
-      uses: actions/setup-python@v5  # ← Actualizado a v5
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         
@@ -28,8 +28,15 @@ jobs:
     - name: Crear directorios de datos
       run: mkdir -p data
       
+    - name: Debug - Ver estructura
+      run: |
+        echo "Estructura del repositorio:"
+        ls -la
+        echo "Buscando main.py:"
+        find . -name "*.py" -type f
+      
     - name: Cargar estado anterior
-      uses: actions/download-artifact@v4  # ← CAMBIO CLAVE: v3 → v4
+      uses: actions/download-artifact@v4
       with:
         name: bot-estado
         path: data/
@@ -43,7 +50,7 @@ jobs:
       run: python main.py
       
     - name: Guardar estado para siguiente ejecución
-      uses: actions/upload-artifact@v4  # ← CAMBIO CLAVE: v3 → v4
+      uses: actions/upload-artifact@v4
       with:
         name: bot-estado
         path: data/
