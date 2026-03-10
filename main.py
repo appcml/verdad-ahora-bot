@@ -1,173 +1,163 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import requests
-from bs4 import BeautifulSoup
-import random
-from .utils import log, cargar_json, guardar_json
-from .config import FUENTES_NOTICIAS, PAGINAS_REFERENCIA
+import sys
+import os
+from datetime import datetime, timedelta
 
-class AnalizadorEstilo:
-    def __init__(self):
-        self.estilo_path = 'data/estilo_referencias.json'
-        self.estilo = cargar_json(self.estilo_path, {
-            'temas_populares': [],
-            'formatos_exitosos': [],
-            'palabras_clave': []
-        })
-    
-    def obtener_noticias_frescas(self):
-        """Obtiene noticias reales de fuentes confiables"""
-        import feedparser
-        
-        noticias = []
-        categoria = random.choice(list(FUENTES_NOTICIAS.keys()))
-        feeds = FUENTES_NOTICIAS[categoria]
-        
-        log(f"Buscando noticias en categoría: {categoria}", 'info')
-        
-        for feed_url in random.sample(feeds, min(2, len(feeds))):
-            try:
-                feed = feedparser.parse(feed_url)
-                for entry in feed.entries[:3]:
-                    noticia = {
-                        'titulo': entry.get('title', ''),
-                        'resumen': entry.get('summary', entry.get('description', '')),
-                        'link': entry.get('link', ''),
-                        'categoria': categoria,
-                        'fecha': entry.get('published', ''),
-                        'fuente': feed.feed.get('title', 'Desconocida')
-                    }
-                    if noticia['titulo'] and len(noticia['titulo']) > 10:
-                        noticias.append(noticia)
-            except Exception as e:
-                log(f"Error feed {feed_url}: {e}", 'advertencia')
-        
-        return noticias
-    
-    def analizar_tendencias(self):
-        """Analiza qué tipo de contenido funciona según las referencias"""
-        patrones = {
-            'horarios_pic': ['08:00', '12:00', '18:00', '21:00'],
-            'longitud_ideal': random.randint(100, 280),
-            'emojis_top': ['🔥', '🚨', '😱', '⚠️', '💥', '👀', '🤯', '🛑'],
-            'temas_virales': [
-                'política_controversial', 'tecnología_impacto', 
-                'misterios_conspiraciones', 'humor_negro', 'alertas_sociales'
-            ]
-        }
-        return patrones
+# Añadir el directorio actual al path para poder importar src
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-class GeneradorContenidoViral:
+# Importaciones absolutas en lugar de relativas
+from src.scraper_referencias import AnalizadorEstilo, GeneradorContenidoViral
+from src.imagen_generator import GeneradorImagenesViral
+from src.facebook_publisher import FacebookPublisher
+from src.utils import log, cargar_json, guardar_json
+from src.config import TIEMPO_ENTRE_PUBLICACIONES
+
+class VerdadAhoraBot:
     def __init__(self):
         self.analizador = AnalizadorEstilo()
-        self.templates = cargar_json('data/templates_virales.json')
+        self.generador = GeneradorContenidoViral()
+        self.imagen_gen = GeneradorImagenesViral()
+        self.publisher = FacebookPublisher()
+        self.historial_path = 'data/historial.json'
+        self.estado_path = 'data/estado.json'
     
-    def seleccionar_mejor_noticia(self, noticias):
-        """Selecciona la noticia con mayor potencial viral"""
+    def verificar_tiempo(self):
+        """Verifica si ha pasado el tiempo mínimo entre publicaciones"""
+        estado = cargar_json(self.estado_path, {'ultima_publicacion': None})
+        
+        if not estado.get('ultima_publicacion'):
+            return True, 0
+        
+        ultima = datetime.fromisoformat(estado['ultima_publicacion'])
+        ahora = datetime.now()
+        minutos_transcurridos = (ahora - ultima).total_seconds() / 60
+        
+        puede = minutos_transcurridos >= TIEMPO_ENTRE_PUBLICACIONES
+        faltan = max(0, TIEMPO_ENTRE_PUBLICACIONES - minutos_transcurridos)
+        
+        return puede, faltan
+    
+    def ya_publicado(self, titulo):
+        """Verifica si ya publicamos algo similar"""
+        historial = cargar_json(self.historial_path, {'publicaciones': []})
+        titulo_hash = hash(titulo.lower().strip())
+        
+        for pub in historial['publicaciones'][-50:]:
+            if hash(pub.get('titulo', '').lower().strip()) == titulo_hash:
+                return True
+        return False
+    
+    def guardar_publicacion(self, contenido, resultado):
+        """Guarda registro de la publicación"""
+        historial = cargar_json(self.historial_path, {'publicaciones': []})
+        
+        historial['publicaciones'].append({
+            'fecha': datetime.now().isoformat(),
+            'titulo': contenido['titulo_original'],
+            'estilo': contenido['estilo'],
+            'categoria': contenido['categoria'],
+            'post_id': resultado.get('post_id'),
+            'engagement_esperado': 'alto'
+        })
+        
+        historial['publicaciones'] = historial['publicaciones'][-100:]
+        guardar_json(self.historial_path, historial)
+        
+        estado = {
+            'ultima_publicacion': datetime.now().isoformat(),
+            'total_publicadas': len(historial['publicaciones']),
+            'proxima_publicacion': (datetime.now() + 
+                                  timedelta(minutes=TIEMPO_ENTRE_PUBLICACIONES)).isoformat()
+        }
+        guardar_json(self.estado_path, estado)
+    
+    def ejecutar(self):
+        """Ejecuta el ciclo completo del bot"""
+        print("\n" + "="*70)
+        print("🤖 VERDAD AHORA - Bot de Contenido Viral")
+        print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*70)
+        
+        puede_publicar, minutos_faltan = self.verificar_tiempo()
+        
+        if not puede_publicar:
+            log(f"⏳ Esperando {minutos_faltan:.0f} minutos para siguiente publicación", 'advertencia')
+            return True
+        
+        log("✅ Iniciando ciclo de publicación", 'exito')
+        
+        log("🔍 Buscando noticias en fuentes confiables...", 'info')
+        noticias = self.analizador.obtener_noticias_frescas()
+        
         if not noticias:
-            return None
+            log("❌ No se encontraron noticias", 'error')
+            return False
         
-        # Puntaje basado en palabras de alto impacto
-        palabras_virales = ['crisis', 'polémica', 'escándalo', 'revelan', 'urgente', 
-                           'histórico', 'impactante', 'increíble', 'shock', 'alerta']
+        log(f"📰 Encontradas {len(noticias)} noticias potenciales", 'info')
         
-        noticias_puntuadas = []
-        for n in noticias:
-            texto = f"{n['titulo']} {n['resumen']}".lower()
-            puntaje = sum(2 for p in palabras_virales if p in texto)
-            puntaje += len([e for e in ['🔥', '🚨', '⚠️'] if e in n['titulo']]) * 3
-            noticias_puntuadas.append((puntaje, n))
+        noticia = self.generador.seleccionar_mejor_noticia(noticias)
         
-        # Ordenar SOLO por puntaje (índice 0), ignorando el diccionario
-        noticias_puntuadas.sort(key=lambda x: x[0], reverse=True)
+        if self.ya_publicado(noticia['titulo']):
+            log("⚠️ Noticia ya publicada anteriormente, buscando alternativa...", 'advertencia')
+            noticias.remove(noticia)
+            if noticias:
+                noticia = self.generador.seleccionar_mejor_noticia(noticias)
+            else:
+                return False
         
-        noticias_puntuadas.sort(key=lambda x: x[0], reverse=True)
-    
-    def crear_variante_viral(self, noticia_original):
-        """Transforma una noticia aburrida en contenido viral"""
-        from .config import TEMPLATES_ENGAGEMENT
+        log(f"🎯 Seleccionada: {noticia['titulo'][:60]}...", 'viral')
         
-        titulo_original = noticia_original['titulo']
-        categoria = noticia_original.get('categoria', 'general')
+        log("✨ Transformando en contenido viral...", 'viral')
+        contenido = self.generador.crear_variante_viral(noticia)
         
-        # Seleccionar estilo según categoría
-        if categoria == 'tecnologia':
-            estilo = 'ironico'
-        elif categoria == 'politica':
-            estilo = 'critico'
-        elif categoria == 'internacional':
-            estilo = 'urgente'
-        else:
-            estilo = random.choice(['urgente', 'intrigante', 'critico'])
+        log(f"🎨 Estilo aplicado: {contenido['estilo']}", 'info')
+        log(f"📊 Categoría: {contenido['categoria']}", 'info')
         
-        # Crear hook inicial
-        hook = random.choice(TEMPLATES_ENGAGEMENT['hook_inicial']).format(
-            titulo=titulo_original
+        log("🎨 Generando imagen viral...", 'viral')
+        imagen_path = self.imagen_gen.crear_imagen_viral(
+            contenido['titulo_original'], 
+            contenido['estilo']
         )
         
-        # Crear cuerpo
-        cuerpo_template = random.choice(TEMPLATES_ENGAGEMENT['cuerpo_estilos'][estilo])
-        resumen_limpio = self._simplificar_contenido(noticia_original['resumen'])
-        cuerpo = cuerpo_template.format(contenido=resumen_limpio)
+        log("📘 Publicando en Facebook...", 'facebook')
+        resultado = self.publisher.publicar_contenido(contenido, imagen_path)
         
-        # Añadir contexto viral
-        contexto = self._generar_contexto_engagement(noticia_original)
-        
-        # Llamada a la acción
-        cta = random.choice(TEMPLATES_ENGAGEMENT['llamada_accion'])
-        
-        # Combinar todo
-        texto_completo = f"{hook}\n\n{cuerpo}\n\n{contexto}{cta}"
-        
-        return {
-            'titulo_original': titulo_original,
-            'texto_viral': texto_completo,
-            'categoria': categoria,
-            'estilo': estilo,
-            'fuente': noticia_original['fuente'],
-            'link_original': noticia_original['link'],
-            'hashtags': self._generar_hashtags(categoria, titulo_original)
-        }
-    
-    def _simplificar_contenido(self, texto, max_chars=200):
-        """Simplifica el contenido para lectura rápida"""
-        import re
-        texto = re.sub(r'<[^>]+>', '', texto)
-        oraciones = texto.split('.')
-        resultado = []
-        chars = 0
-        
-        for oracion in oraciones:
-            oracion = oracion.strip()
-            if len(oracion) > 20:
-                resultado.append(oracion)
-                chars += len(oracion)
-                if chars > max_chars:
-                    break
-        
-        return '. '.join(resultado) + ('...' if len(texto) > max_chars else '')
-    
-    def _generar_contexto_engagement(self, noticia):
-        """Genera frases que generan curiosidad"""
-        frases = [
-            f"📍 Fuente: {noticia['fuente']}",
-            "⏰ Información actualizada",
-            "🔍 Esto cambia todo...",
-            "💡 Dato clave que nadie menciona",
-        ]
-        return random.choice(frases)
-    
-    def _generar_hashtags(self, categoria, titulo):
-        """Genera hashtags relevantes y virales"""
-        base = {
-            'tecnologia': ['#Tecnología', '#Innovación', '#Futuro'],
-            'politica': ['#Política', '#Actualidad', '#Gobierno'],
-            'internacional': ['#Internacional', '#Mundo', '#Global'],
-            'viral': ['#Viral', '#Tendencia', '#Noticias']
-        }
-        
-        hashtags = base.get(categoria, ['#Noticias', '#Actualidad'])
-        hashtags.extend(['#VerdadAhora', '#InformaciónLibre', '#Comparte'])
-        
-        return ' '.join(hashtags)
+        if resultado['success']:
+            self.guardar_publicacion(contenido, resultado)
+            
+            if imagen_path and os.path.exists(imagen_path):
+                try:
+                    os.remove(imagen_path)
+                except:
+                    pass
+            
+            print("\n" + "="*70)
+            log("✅ PUBLICACIÓN COMPLETADA", 'exito')
+            print(f"📰 {contenido['titulo_original'][:50]}...")
+            print(f"🎨 Estilo: {contenido['estilo']}")
+            print(f"🔗 Post ID: {resultado.get('post_id')}")
+            print(f"⏰ Próxima: {(datetime.now() + timedelta(minutes=60)).strftime('%H:%M')}")
+            print("="*70)
+            return True
+        else:
+            log("❌ Falló la publicación", 'error')
+            return False
+
+def main():
+    bot = VerdadAhoraBot()
+    return bot.ejecutar()
+
+if __name__ == "__main__":
+    try:
+        exit(0 if main() else 1)
+    except KeyboardInterrupt:
+        log("Bot detenido por usuario", 'advertencia')
+        exit(1)
+    except Exception as e:
+        log(f"Error crítico: {e}", 'error')
+        import traceback
+        traceback.print_exc()
+        exit(1)
